@@ -1,23 +1,14 @@
 const querystring = require('querystring');
-const Autoload = require('./autoload.class');
-const dbManager = require("../package/dbManager").dbManager;
 const { decrypt } = require("./encryption");
 const { ENCRYPTION_MODE } = JSON.parse(process.env.ENCRYPTION);
 const multipart = require('aws-multipart-parser');
 
 class ParameterProcessor extends baseAction {
 
-  async processParameter(initializer, event, action) {
+  async processParameter(initializer, request, action) {
     let requestData;
     let encryptionState = true;
     const params = initializer.getParameter();
-    const isSecured = initializer.pkgInitializer.isSecured;
-
-    let { lng_key: lngKey } = event.headers;
-    if (lngKey) {
-      this.setMemberVariable('lng_key', lngKey);
-      action.setMemberVariable('lng_key', lngKey);
-    }
 
     let fileExists = false;
     Object.keys(params).map(key => {
@@ -26,20 +17,20 @@ class ParameterProcessor extends baseAction {
 
     try {
       //remove the request query/body parameters from request object
-      if (event.httpMethod == 'GET') {
-        requestData = event.queryStringParameters;
+      if (request.httpMethod == 'GET') {
+        requestData = request.queryStringParameters;
         encryptionState = requestData.enc_state == 1;
         if (!fileExists && (ENCRYPTION_MODE == "strict" || (ENCRYPTION_MODE == "optional" && encryptionState))) {
           requestData = requestData.data ? JSON.parse(decrypt(requestData.data)) : {};
         }
-        event.queryStringParameters = null;
-        event.multiValueQueryStringParameters = null;
-      } else if (event.httpMethod == 'POST') {
-        if (typeof (event.body) == "string") {
+        request.queryStringParameters = null;
+        request.multiValueQueryStringParameters = null;
+      } else if (request.httpMethod == 'POST') {
+        if (typeof (request.body) == "string") {
           if (fileExists) {
-            requestData = multipart.parse(event, true);
+            requestData = multipart.parse(request, true);
           } else {
-            requestData = querystring.parse(event.body);
+            requestData = querystring.parse(request.body);
           }
           encryptionState = requestData.enc_state == 1;
           if (!fileExists && (ENCRYPTION_MODE == "strict" || (ENCRYPTION_MODE == "optional" && encryptionState))) {
@@ -47,53 +38,26 @@ class ParameterProcessor extends baseAction {
             requestData = requestData.data ? JSON.parse(decrypt(Object.fromEntries(urlParams).data)) : {};
           }
         } else {
-          requestData = event.body;
+          requestData = request.body;
           encryptionState = requestData.enc_state == 1;
           if (!fileExists && (ENCRYPTION_MODE == "strict" || (ENCRYPTION_MODE == "optional" && encryptionState))) {
             requestData = requestData.data ? JSON.parse(decrypt(requestData.data)) : {};
           }
         }
-        event.body = null;
+        request.body = null;
       }
 
-      if (event.pathParameters) {
-        Object.keys(event.pathParameters).map(key => {
-          requestData ? requestData[key] = event.pathParameters[key] : requestData = { [key]: event.pathParameters[key] };
+      if (request.pathParameters) {
+        Object.keys(request.pathParameters).map(key => {
+          requestData ? requestData[key] = request.pathParameters[key] : requestData = { [key]: request.pathParameters[key] };
         });
       }
 
       requestData = requestData ? requestData : {};
-      Autoload.requestData = requestData;
-      Autoload.encryptionState = encryptionState;
 
       this.removeUndefinedParameters(params, {}, requestData);
 
       this.trimRequestParameterValues(requestData);
-
-      //process the user_id and access_token parameters here
-      if (isSecured) {
-        let { access_token: accessToken } = event.headers;
-
-        if (!accessToken || typeof accessToken != "string" || accessToken.trim() == "") {
-          let options = [];
-          options.paramName = 'access_token';
-          this.setResponse("INVALID_INPUT_EMPTY", options);
-          return false;
-        }
-
-        if ((ENCRYPTION_MODE == "strict" || (ENCRYPTION_MODE == "optional" && encryptionState))) {
-          accessToken = decrypt(accessToken);
-        }
-
-        const validatedUser = await dbManager.verifyAccessToken(accessToken);
-        if (!validatedUser) {
-          this.setResponse("INVALID_ACCESS_TOKEN");
-          return false;
-        }
-
-        action.setMemberVariable('accessToken', accessToken);
-        action.setMemberVariable('userObj', validatedUser);
-      }
 
       if (!this.validateParameters(params, requestData, action)) {
         return false;
@@ -134,20 +98,6 @@ class ParameterProcessor extends baseAction {
         requestData[`${paramName}`] = requestData[`${paramName}`].trim();
       }
     }
-  }
-
-  //get the auth parameters(userId and accessToken)
-  getAuthParameters() {
-    const param = [];
-
-    param.accessToken = {
-      name: "access_token",
-      type: "string",
-      description: "access token",
-      required: true,
-      default: ""
-    }
-    return param;
   }
 
   validateParameters(param, requestData, action) {
